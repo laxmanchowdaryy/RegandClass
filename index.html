@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medical Insurance Cost Predictor</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px 16px; min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif; color: #172033;
+      background: #f3f6fb;
+    }
+    .container {
+      max-width: 760px; margin: 0 auto; padding: 30px;
+      background: #fff; border: 1px solid #e1e7f0; border-radius: 18px;
+      box-shadow: 0 12px 35px rgba(25, 45, 80, .08);
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .intro { margin: 0 0 24px; color: #5b6577; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    label { display: block; margin-bottom: 7px; font-weight: 600; font-size: 14px; }
+    input, select {
+      width: 100%; padding: 12px; border: 1px solid #cbd3df;
+      border-radius: 9px; background: white; color: #172033; font-size: 15px;
+    }
+    input:focus, select:focus { outline: 2px solid #9bbcff; border-color: #477fe8; }
+    button {
+      width: 100%; margin-top: 24px; padding: 14px; border: 0;
+      border-radius: 10px; color: white; background: #245fce;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: wait; }
+    #status { margin-top: 16px; color: #5b6577; font-size: 14px; }
+    #result {
+      display: none; margin-top: 20px; padding: 20px; border-radius: 12px;
+      background: #edf5ff; border: 1px solid #cfe2ff;
+    }
+    #amount { margin-top: 6px; font-size: 30px; font-weight: 800; color: #174da8; }
+    .note { margin-top: 22px; color: #697386; font-size: 12px; line-height: 1.5; }
+    @media (max-width: 560px) {
+      .container { padding: 22px 18px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 23px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>Medical Insurance Cost Predictor</h1>
+    <p class="intro">Enter the details below to estimate medical insurance charges using a trained machine-learning model.</p>
+
+    <form id="prediction-form">
+      <div class="grid">
+        <div>
+          <label for="age">Age (years)</label>
+          <input id="age" type="number" min="18" max="100" step="1" value="30" required>
+        </div>
+        <div>
+          <label for="bmi">BMI</label>
+          <input id="bmi" type="number" min="10" max="80" step="0.1" value="25" required>
+        </div>
+        <div>
+          <label for="children">Number of children</label>
+          <input id="children" type="number" min="0" max="20" step="1" value="0" required>
+        </div>
+        <div>
+          <label for="sex">Sex</label>
+          <select id="sex" required>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+          </select>
+        </div>
+        <div>
+          <label for="smoker">Smoker status</label>
+          <select id="smoker" required>
+            <option value="no">No</option>
+            <option value="yes">Yes</option>
+          </select>
+        </div>
+        <div>
+          <label for="region">Region</label>
+          <select id="region" required>
+            <option value="northeast">Northeast</option>
+            <option value="northwest">Northwest</option>
+            <option value="southeast">Southeast</option>
+            <option value="southwest">Southwest</option>
+          </select>
+        </div>
+      </div>
+      <button id="predict-button" type="submit">Predict insurance charges</button>
+    </form>
+
+    <div id="status">Loading the prediction model…</div>
+    <section id="result" aria-live="polite">
+      <div>Estimated medical insurance charges</div>
+      <div id="amount"></div>
+    </section>
+
+    <p class="note">
+      Model note: This website runs the exported ResNet PyTorch model through ONNX Runtime Web.
+      Predictions are estimates based on the training dataset and are not insurance quotes or financial advice.
+    </p>
+  </main>
+
+  <script>
+    let session = null;
+
+    const statusElement = document.getElementById("status");
+    const predictButton = document.getElementById("predict-button");
+    const resultElement = document.getElementById("result");
+    const amountElement = document.getElementById("amount");
+
+    async function loadModel() {
+      try {
+        // Load the ONNX model from the same GitHub Pages folder as this HTML file.
+        session = await ort.InferenceSession.create("./best_regression_model.onnx");
+        statusElement.textContent = "Model loaded. Enter the details and select Predict.";
+        predictButton.disabled = false;
+      } catch (error) {
+        statusElement.textContent =
+          "Could not load the model. Check that best_regression_model.onnx is in the repository root. Details: " +
+          error.message;
+        predictButton.disabled = true;
+      }
+    }
+
+    function makeFeatureVector() {
+      const age = Number(document.getElementById("age").value);
+      const bmi = Number(document.getElementById("bmi").value);
+      const children = Number(document.getElementById("children").value);
+      const sex = document.getElementById("sex").value;
+      const smoker = document.getElementById("smoker").value;
+      const region = document.getElementById("region").value;
+
+      // Match the exact feature order saved in regression_metadata.json.
+      return new Float32Array([
+        age,
+        bmi,
+        children,
+        sex === "female" ? 1 : 0,
+        sex === "male" ? 1 : 0,
+        smoker === "no" ? 1 : 0,
+        smoker === "yes" ? 1 : 0,
+        region === "northeast" ? 1 : 0,
+        region === "northwest" ? 1 : 0,
+        region === "southeast" ? 1 : 0,
+        region === "southwest" ? 1 : 0
+      ]);
+    }
+
+    document.getElementById("prediction-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!session) {
+        statusElement.textContent = "The model is not ready yet. Please wait.";
+        return;
+      }
+
+      const age = Number(document.getElementById("age").value);
+      const bmi = Number(document.getElementById("bmi").value);
+      const children = Number(document.getElementById("children").value);
+
+      if (![age, bmi, children].every(Number.isFinite)) {
+        statusElement.textContent = "Please enter valid numeric values.";
+        return;
+      }
+
+      predictButton.disabled = true;
+      statusElement.textContent = "Calculating prediction…";
+      resultElement.style.display = "none";
+
+      try {
+        const inputTensor = new ort.Tensor("float32", makeFeatureVector(), [1, 11]);
+        const inputName = session.inputNames[0];
+        const outputName = session.outputNames[0];
+        const outputs = await session.run({ [inputName]: inputTensor });
+        const prediction = Number(outputs[outputName].data[0]);
+
+        if (!Number.isFinite(prediction)) {
+          throw new Error("The model returned an invalid prediction.");
+        }
+
+        amountElement.textContent = new Intl.NumberFormat("en-US", {
+          style: "currency", currency: "USD", maximumFractionDigits: 2
+        }).format(prediction);
+
+        resultElement.style.display = "block";
+        statusElement.textContent = "Prediction completed.";
+      } catch (error) {
+        statusElement.textContent = "Prediction failed: " + error.message;
+      } finally {
+        predictButton.disabled = false;
+      }
+    });
+
+    predictButton.disabled = true;
+    loadModel();
+  </script>
+</body>
+</html>
