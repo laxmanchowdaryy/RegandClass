@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bank Marketing Classification</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#657086; --line:#dce2eb; --panel:#ffffff; --bg:#f4f6fa; --accent:#315bd6; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--ink); }
+    main { width:min(900px, calc(100% - 32px)); margin:42px auto; }
+    header { margin-bottom:24px; }
+    h1 { margin:0 0 8px; font-size:clamp(25px, 4vw, 34px); }
+    header p, .hint { color:var(--muted); line-height:1.5; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:24px; box-shadow:0 8px 28px rgba(20,35,70,.05); }
+    #fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    label { display:flex; flex-direction:column; gap:7px; font-size:14px; font-weight:600; }
+    input, select { width:100%; min-height:43px; border:1px solid var(--line); border-radius:8px; padding:10px 11px; background:white; color:var(--ink); font:inherit; }
+    button { margin-top:22px; width:100%; min-height:46px; border:0; border-radius:9px; background:var(--accent); color:white; font-size:15px; font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    #status { margin-top:14px; color:var(--muted); font-size:14px; }
+    #result { display:none; margin-top:20px; padding:18px; border-radius:12px; background:#edf3ff; }
+    #prediction { font-size:24px; font-weight:700; margin:0 0 8px; }
+    #probability { color:#35445f; }
+    .foot { margin-top:18px; font-size:12px; color:var(--muted); }
+    @media(max-width:620px) { #fields { grid-template-columns:1fr; } .panel { padding:18px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Bank Marketing Classification</h1>
+      <p>Enter customer and campaign information to estimate whether the customer will subscribe to a term deposit.</p>
+    </header>
+    <section class="panel">
+      <form id="predictionForm">
+        <div id="fields"><p class="hint">Loading model fields…</p></div>
+        <button id="predictButton" type="submit" disabled>Predict subscription</button>
+      </form>
+      <div id="status" role="status">Loading model and metadata…</div>
+      <div id="result" aria-live="polite">
+        <p id="prediction"></p>
+        <div id="probability"></div>
+      </div>
+      <p class="foot">Predictions are generated in your browser using the exported PyTorch ONNX model.</p>
+    </section>
+  </main>
+<script>
+  let session;
+  let metadata;
+
+  const prettyName = (name) => name.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  function buildFields() {
+    const container = document.getElementById('fields');
+    container.innerHTML = '';
+    const numeric = new Set(metadata.numeric_columns || []);
+    const categorical = metadata.categorical_columns || [];
+
+    for (const name of metadata.numeric_columns || []) {
+      const label = document.createElement('label');
+      label.textContent = prettyName(name);
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.name = name;
+      input.step = 'any';
+      input.required = true;
+      input.value = metadata.numeric_medians?.[name] ?? 0;
+      label.appendChild(input);
+      container.appendChild(label);
+    }
+
+    for (const name of categorical) {
+      const label = document.createElement('label');
+      label.textContent = prettyName(name);
+      const select = document.createElement('select');
+      select.name = name;
+      select.required = true;
+      const values = metadata.categorical_values?.[name] || [];
+      const defaultValue = metadata.categorical_modes?.[name];
+      for (const value of values) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = prettyName(value);
+        if (value === defaultValue) option.selected = true;
+        select.appendChild(option);
+      }
+      label.appendChild(select);
+      container.appendChild(label);
+    }
+  }
+
+  function makeInputVector(formData) {
+    const numericValues = {};
+    const categoricalValues = {};
+    for (const name of metadata.numeric_columns || []) {
+      const value = Number(formData.get(name));
+      if (!Number.isFinite(value)) throw new Error(`Enter a valid number for ${name}.`);
+      numericValues[name] = value;
+    }
+    for (const name of metadata.categorical_columns || []) {
+      categoricalValues[name] = String(formData.get(name));
+    }
+
+    const vector = metadata.feature_names.map(feature => {
+      if (Object.prototype.hasOwnProperty.call(numericValues, feature)) return numericValues[feature];
+      for (const column of metadata.categorical_columns || []) {
+        const selected = categoricalValues[column];
+        if (feature === `${column}_${selected}`) return 1;
+      }
+      return 0;
+    });
+    return new Float32Array(vector);
+  }
+
+  function softmax(values) {
+    const max = Math.max(...values);
+    const exps = values.map(value => Math.exp(value - max));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    return exps.map(value => value / sum);
+  }
+
+  async function initialize() {
+    const status = document.getElementById('status');
+    try {
+      const metadataResponse = await fetch('./classification_metadata.json');
+      if (!metadataResponse.ok) throw new Error('Could not load classification_metadata.json. Check that it is in this folder.');
+      metadata = await metadataResponse.json();
+      buildFields();
+      session = await ort.InferenceSession.create('./best_classification_model.onnx');
+      document.getElementById('predictButton').disabled = false;
+      status.textContent = 'Model loaded. Enter the information and select Predict subscription.';
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  }
+
+  document.getElementById('predictionForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+    const button = document.getElementById('predictButton');
+    button.disabled = true;
+    result.style.display = 'none';
+    try {
+      const inputVector = makeInputVector(new FormData(event.currentTarget));
+      const tensor = new ort.Tensor('float32', inputVector, [1, inputVector.length]);
+      const outputs = await session.run({ input: tensor });
+      const logits = Array.from(outputs.logits.data).slice(0, 2);
+      const probabilities = softmax(logits);
+      const yesProbability = probabilities[metadata.positive_class_index ?? 1];
+      const predictedYes = yesProbability >= probabilities[0];
+      document.getElementById('prediction').textContent = predictedYes
+        ? 'Prediction: Likely to subscribe'
+        : 'Prediction: Unlikely to subscribe';
+      document.getElementById('probability').textContent = `Estimated subscription probability: ${(yesProbability * 100).toFixed(2)}%`;
+      result.style.display = 'block';
+      status.textContent = 'Prediction completed.';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  initialize();
+</script>
+</body>
+</html>
